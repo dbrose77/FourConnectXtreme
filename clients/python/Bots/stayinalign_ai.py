@@ -5,23 +5,11 @@ from time import perf_counter
 from Bots.bot_ai import BotAI
 from Bots.data import PlayState
 
-# TODO:
-# [x] project next move to not make a move that will give the opponent a winning move
-# [x] tactical starting moves
-# [x] try to use the middle column 
-# [x] find double threat moves (simulate legal moves and find winning moves)
-# [ ] find possible winning (and losing) moves with 2 coins in a row
-# [ ] plan heuristic for future moves
-# [ ] calculate bomb threats
-
 class StayinAlignAI(BotAI):
     def __init__(self):
         self.name = "StayinAlign"
 
     def play(self, state: PlayState):
-        start = perf_counter()
-        # self._print_board(state.board)
-
         possible_moves = self.find_possible_moves(state.board)
         # if no possible moves, use a random column -> game is lost
         if not possible_moves:
@@ -54,10 +42,8 @@ class StayinAlignAI(BotAI):
             return double_threat_moves[0]
         
         # find good moves
-        good_moves = self.find_good_moves(state.board, state.coin_id, sensible_moves, 3)
+        good_moves = self.find_good_moves(state.board, state.coin_id, sensible_moves, 3, state.bombs, state.round)
         if good_moves:
-            elapsed_ms = (perf_counter() - start) * 1000
-            print(f"StayinAlign play time: {elapsed_ms:.2f} ms")
             return good_moves[0]
 
         # fall back to a random move in legal columns
@@ -74,8 +60,6 @@ class StayinAlignAI(BotAI):
         while col not in sensible_cols:
             col = randrange(0, 7)
 
-        elapsed_ms = (perf_counter() - start) * 1000
-        print(f"StayinAlign play time: {elapsed_ms:.2f} ms")
         return col
 
     def _print_board(self, board):
@@ -193,7 +177,33 @@ class StayinAlignAI(BotAI):
 
         return False
 
-    def find_good_moves(self, board, coin_id, possible_moves, depth):
+    def simulate_bomb(self, board, bombs):
+        if not bombs:
+            return board
+
+        exploded = copy.deepcopy(board)
+        for bomb in bombs:
+            row = bomb.get("row")
+            col = bomb.get("col")
+            if row is None or col is None:
+                continue
+            for dRow, dCol in ((0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)):
+                r = row + dRow
+                c = col + dCol
+                if 0 <= r < 6 and 0 <= c < 7:
+                    exploded[r][c] = 0
+
+        # apply gravity
+        for c in range(7):
+            stack = [exploded[r][c] for r in range(6) if exploded[r][c] != 0]
+            for r in range(6):
+                exploded[r][c] = 0
+            for idx, val in enumerate(stack):
+                exploded[idx][c] = val
+
+        return exploded
+
+    def find_good_moves(self, board, coin_id, possible_moves, depth, bombs, current_round):
         # find all moves that are good, plan number of depth moves ahead
         # plan our and opponent moves and find the best move
         if depth <= 0 or not possible_moves:
@@ -201,39 +211,49 @@ class StayinAlignAI(BotAI):
 
         opponent_id = 2 if coin_id == 1 else 1
 
-        def is_win(cur_board, player, xCol, yRow):
+        def is_win(current_board, player, xCol, yRow):
             return (
-                self.count_horizontal(cur_board, xCol, yRow, player) >= 4
-                or self.count_vertical(cur_board, xCol, yRow, player) >= 4
-                or self.count_diagonal(cur_board, xCol, yRow, player) >= 4
+                self.count_horizontal(current_board, xCol, yRow, player) >= 4
+                or self.count_vertical(current_board, xCol, yRow, player) >= 4
+                or self.count_diagonal(current_board, xCol, yRow, player) >= 4
             )
 
-        def heuristic(cur_board):
+        def heuristic(current_board, current_round):
             # quick, cheap evaluation: immediate wins and double threats
-            moves = self.find_possible_moves(cur_board)
-            my_wins = len(self.find_winning_moves(cur_board, coin_id, moves))
-            opp_wins = len(self.find_winning_moves(cur_board, opponent_id, moves))
-            my_double = len(self.find_double_threat_moves(cur_board, coin_id, moves))
-            return my_wins * 50 + my_double * 10 - opp_wins * 50
+            moves = self.find_possible_moves(current_board)
+            my_wins = len(self.find_winning_moves(current_board, coin_id, moves))
+            opponent_wins = len(self.find_winning_moves(current_board, opponent_id, moves))
+            my_double_threats = len(self.find_double_threat_moves(current_board, coin_id, moves))
+            bomb_score = 0
+            if bombs:
+                soonest = min(b.get("explode_in_round", 1000) - current_round for b in bombs)
+                # only project the explosion if it will happen within the search horizon
+                if soonest <= depth:
+                    post_board = self.simulate_bomb(current_board, bombs)
+                    post_moves = self.find_possible_moves(post_board)
+                    post_my_wins = len(self.find_winning_moves(post_board, coin_id, post_moves))
+                    post_opponent_wins = len(self.find_winning_moves(post_board, opponent_id, post_moves))
+                    bomb_score += (post_my_wins - post_opponent_wins) * 20
+            return my_wins * 50 + my_double_threats * 10 - opponent_wins * 50 + bomb_score
 
-        def score(cur_board, current_player, current_depth, alpha, beta):
-            moves = self.find_possible_moves(cur_board)
+        def score(current_board, current_player, current_depth, alpha, beta, current_round):
+            moves = self.find_possible_moves(current_board)
             if current_depth == 0 or not moves:
-                return heuristic(cur_board)
+                return heuristic(current_board, current_round)
 
             maximizing = current_player == coin_id
             best_val = -10_000 if maximizing else 10_000
 
             for xMove, yMove in moves:
-                cur_board[yMove][xMove] = current_player
+                current_board[yMove][xMove] = current_player
                 try:
-                    if is_win(cur_board, current_player, xMove, yMove):
+                    if is_win(current_board, current_player, xMove, yMove):
                         value = 500 if maximizing else -500
                     else:
                         next_player = opponent_id if maximizing else coin_id
-                        value = score(cur_board, next_player, current_depth - 1, alpha, beta)
+                        value = score(current_board, next_player, current_depth - 1, alpha, beta, current_round + 1)
                 finally:
-                    cur_board[yMove][xMove] = 0
+                    current_board[yMove][xMove] = 0
 
                 if maximizing:
                     if value > best_val:
@@ -259,7 +279,7 @@ class StayinAlignAI(BotAI):
                 if is_win(board, coin_id, xCol, yRow):
                     move_score = 1_000
                 else:
-                    move_score = score(board, opponent_id, depth - 1, -10_000, 10_000)
+                    move_score = score(board, opponent_id, depth - 1, -10_000, 10_000, current_round + 1)
             finally:
                 board[yRow][xCol] = 0
 
@@ -269,33 +289,7 @@ class StayinAlignAI(BotAI):
             elif move_score == best_score:
                 best_moves.append(xCol)
 
+        if len(best_moves) > 1:
+            priority = {col: idx for idx, col in enumerate((3, 2, 4, 1, 5, 0, 6))}
+            best_moves.sort(key=lambda col: priority.get(col, len(priority)))
         return best_moves
-
-    def is_good_move(self, board, coin_id, xCol, yRow):
-        # check if playing at (xCol, yRow) is a good move
-        # a good move is a move that will create a possible double threat
-        # a good move is a move that will create three chips in a row (horizontal, vertical, diagonal) with the same coin_id with an open spot on the end
-        if self.find_double_threat_move(board, coin_id, xCol, yRow):
-            return True
-
-        board[yRow][xCol] = coin_id
-        try:
-            for xStep, yStep in ((1, 0), (0, 1), (1, 1), (1, -1)):
-                forward = self.count_direction(board, xCol, yRow, xStep, yStep, coin_id)
-                backward = self.count_direction(board, xCol, yRow, -xStep, -yStep, coin_id)
-                total = 1 + forward + backward
-                if total < 3:
-                    continue
-
-                end1_x = xCol + (forward + 1) * xStep
-                end1_y = yRow + (forward + 1) * yStep
-                end2_x = xCol - (backward + 1) * xStep
-                end2_y = yRow - (backward + 1) * yStep
-
-                if (0 <= end1_x < 7 and 0 <= end1_y < 6 and board[end1_y][end1_x] == 0) or \
-                   (0 <= end2_x < 7 and 0 <= end2_y < 6 and board[end2_y][end2_x] == 0):
-                    return True
-        finally:
-            board[yRow][xCol] = 0
-
-        return False
