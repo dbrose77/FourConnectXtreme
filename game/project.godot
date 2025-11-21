@@ -12,7 +12,7 @@ config_version=5
 
 config/name="FourConnect"
 run/main_scene="uid://ceafvsn8bq41a"
-config/features=PackedStringArray("4.4", "Mobile")
+config/features=PackedStringArray("4.5", "Mobile")
 config/icon="res://icon.svg"
 
 [autoload]

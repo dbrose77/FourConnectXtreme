@@ -1,10 +1,10 @@
 from Bots.bot_ai import BotAI
 from Bots.my_ai import MyAI
-from Bots.random_ai import RandomAI
+from Bots.stayinalign_ai import StayinAlignAI
 
 ai_bots = {
     "MyAI": MyAI,
-    "RandomAI": RandomAI,
+    "StayinAlignAI": StayinAlignAI,
 }
 
 
